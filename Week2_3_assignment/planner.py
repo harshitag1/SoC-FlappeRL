@@ -1,198 +1,153 @@
 import argparse
-import numpy as np
-from scipy.optimize import linprog
+from pulp import LpProblem, LpMaximize, LpVariable, lpSum
 
-# write a function to read the MDP file
-# return the following:
-# num_states: number of states in the MDP
-# num_actions: number of actions in the MDP
-# start_state: the start state of the MDP
-# end_states: list of terminal states in the MDP
-# transP: transition probabilities
-# rewards: rewards
-# mdptype: episodic or continuing
-# discount: discount factor
-
-def read_mdp_file(file_path):
-    with open(file_path, 'r', encoding='UTF-16') as f:
-        lines = f.readlines()
-    
-    lineArr = lines
-    # print(lines[1])
-    # print('running')
-    num_states = int(lines[0].split()[1])
-    num_actions = int(lines[1].split()[1])
-    start_state = int(lines[2].split()[1])
-    end_states = list(map(int, lines[3].split()[1:]))
-    
-    transP = np.zeros((num_states, num_actions, num_states))
-    rewards = np.zeros((num_states, num_actions, num_states))
-    
-    for line in lines[4:-2]:
-        parts = line.split()
-        s1 = int(parts[1])
-        ac = int(parts[2])
-        s2 = int(parts[3])
-        r = eval(parts[4])
-        p = eval(parts[5])
-        rewards[s1, ac, s2] = r
-        transP[s1, ac, s2] = p
-    
-    mdptype = lines[-2].split()[1]
-    discount = float(lines[-1].split()[1])
-    # if(mdptype =='episodic'):
-    #     discount = 1
-    # print('Read the file')
-    return num_states, num_actions, start_state, end_states, transP, rewards, mdptype, discount
-
-def value_iteration(num_states, num_actions, transitions, rewards, discount_factor):
-    values = np.zeros(num_states)
-    policy = np.zeros(num_states, dtype=int)
-    
-    while True:
-        prev_values = values.copy()
+class MDP:
+    def __init__(self, mdp_file):
+        self.load_mdp(mdp_file)
         
-        for state in range(num_states):
-            q_values = np.array([-10000]*num_actions)
-            
-            for action in range(num_actions):
-                q_value = 0.0
-                
-                for next_state in range(num_states):
-                    q_value += transitions[state, action, next_state] * (rewards[state, action, next_state] + discount_factor * prev_values[next_state])
-                
-                q_values[action] = q_value
-            
-            best_action = np.argmax(q_values)
-            values[state] = q_values[best_action]
-            policy[state] = best_action
+    def load_mdp(self, mdp_file):
+        # Read the MDP file and initialize the MDP instance
+        with open(mdp_file, 'r') as f:
+            lines = f.readlines()
         
-        if np.max(np.abs(values - prev_values)) < 1e-8:
-            break
-    
-    return values, policy
+        self.num_states = int(lines[0].split()[1])
+        self.num_actions = int(lines[1].split()[1])
+        self.start_state = int(lines[2].split()[1])
+        self.end_states = [int(s) for s in lines[3].split()[1:]]
 
-def howards_policy_iteration(num_states, num_actions, transitions, rewards, discount_factor):
-    values = np.zeros(num_states)
-    policy = np.zeros(num_states, dtype=int)
-    
-    while True:
-        # print('policy evaluation')
-        # Policy evaluation
+        self.transitions = {}
+        for line in lines[4:-2]:
+            s1, a, s2, r, p = map(float, line.split()[1:])
+            self.transitions.setdefault((int(s1), int(a)), []).append((int(s2), r, p))
+
+        self.mdptype = lines[-2].split()[1]
+        self.discount = float(lines[-1].split()[1])
+
+        # Initialize the value function and policy arrays
+        self.V = [0.0] * self.num_states
+        self.pi = [0] * self.num_states
+
+    def value_iteration(self):
+        # Implement Value Iteration to compute V* and π*
+        epsilon = 1e-6
         while True:
-            prev_values = values.copy()
-            
-            for state in range(num_states):
-                # print(state)
-                action = policy[state]
-                
-                value = 0.0
-                for next_state in range(num_states):
-                    value += transitions[state, action, next_state] * (rewards[state, action, next_state] + discount_factor * prev_values[next_state])
-                
-                values[state] = value
-            
-            if np.max(np.abs(values - prev_values)) < 1e-7:
+            delta = 0.0
+            for s in range(self.num_states):
+                if s not in self.end_states:
+                    v = self.V[s]
+                    self.V[s] = max(self.q_value(s, a) for a in range(self.num_actions))
+                    delta = max(delta, abs(self.V[s] - v))
+            if delta < epsilon:
                 break
-        
-        policy_stable = True
-        
-        for state in range(num_states):
-            old_action = policy[state]
-            q_values = np.zeros(num_actions)
-            
-            for action in range(num_actions):
-                q_value = 0.0
-                
-                for next_state in range(num_states):
-                    q_value += transitions[state, action, next_state] * (rewards[state, action, next_state] + discount_factor * values[next_state])
-                
-                q_values[action] = q_value
-            
-            best_action = np.argmax(q_values)
-            policy[state] = best_action
-            
-            if old_action != best_action:
-                policy_stable = False
-        # print('Policy improved')
-        
-        if policy_stable:
-            break
-    return values, policy
 
-def linear_programming(num_states, num_actions, transitions, rewards, discount_factor):
-    c = np.zeros(num_states)
-    A_ub = np.zeros((num_states * num_actions, num_states))
-    b_ub = np.zeros(num_states * num_actions)
-    bounds = [(None, None)] * num_states
-    
-    for state in range(num_states):
-        c[state] = -1.0
-        
-        for action in range(num_actions):
-            b_ub[state * num_actions + action] = 0.0
-            
-            for next_state in range(num_states):
-                A_ub[state * num_actions + action, next_state] = transitions[state, action, next_state]
-                b_ub[state * num_actions + action] += transitions[state, action, next_state] * (rewards[state, action, next_state] + discount_factor * 0.0)
-    
-    result = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method='highs')
-    
-    values = result.x
-    policy = np.zeros(num_states, dtype=int)
-    
-    for state in range(num_states):
-        q_values = np.zeros(num_actions)
-        
-        for action in range(num_actions):
-            q_value = 0.0
-            
-            for next_state in range(num_states):
-                try:
-                    q_value += transitions[state, action, next_state] * (rewards[state, action, next_state] + discount_factor * values[next_state])
-                except:
-                    q_value +=0
+        # Compute the optimal policy using the computed values
+        self.compute_optimal_policy()
 
-            q_values[action] = q_value
-        
-        best_action = np.argmax(q_values)
-        policy[state] = best_action
-    
-    return values, policy
+    def howards_policy_iteration(self):
+        # Implement Howard's Policy Iteration to compute V* and π*
+        self.pi = [0] * self.num_states  # Initialize the policy arbitrarily
+        while True:
+            self.policy_evaluation()
+            policy_stable = True
+            for s in range(self.num_states):
+                if s not in self.end_states:
+                    a = self.best_action(s)
+                    if a != self.pi[s]:
+                        policy_stable = False
+                        self.pi[s] = a
+            if policy_stable:
+                break
 
-def print_results(values, policy):
-    for state in range(len(values)):
-        value = values[state]
-        action = policy[state]
-        # print(f"V*({state})   π*({state})")
-        print(f"{value:.6f}   {action}")
+    def linear_programming(self):
+        # Implement Linear Programming to compute V* and π*
+        model = LpProblem(name="MDP_LP", sense=LpMaximize)
+        V = [LpVariable(name=f"V_{s}", lowBound=None) for s in range(self.num_states)]
+
+        # Objective function
+        model += lpSum(V[s] for s in range(self.num_states))
+
+        # Constraints
+        for s in range(self.num_states):
+            if s in self.end_states:
+                model += V[s] == 0.0
+            else:
+                q_values = [self.q_value(s, a) for a in range(self.num_actions)]
+                model += V[s] >= lpSum(q_values)
+
+        # Solve the linear program
+        model.solve()
+
+        # Extract the results
+        for s in range(self.num_states):
+            self.V[s] = V[s].value()
+
+        # Compute the optimal policy using the computed values
+        self.compute_optimal_policy()
+
+    def policy_evaluation(self):
+        epsilon = 1e-6
+        while True:
+            delta = 0.0
+            for s in range(self.num_states):
+                if s not in self.end_states:
+                    v = self.V[s]
+                    self.V[s] = self.q_value(s, self.pi[s])
+                    delta = max(delta, abs(self.V[s] - v))
+            if delta < epsilon:
+                break
+
+    def q_value(self, s, a):
+        # Compute the Q-value for state s and action a
+        q = 0.0
+        for s2, r, p in self.transitions.get((s, a), []):
+            q += p * (r + self.discount * self.V[s2])
+        return q
+
+    def best_action(self, s):
+        # Find the best action for state s
+        best_a, best_q = None, float('-inf')
+        for a in range(self.num_actions):
+            q = self.q_value(s, a)
+            if q > best_q:
+                best_q = q
+                best_a = a
+        return best_a
+
+    def compute_optimal_policy(self):
+        # Compute the optimal policy using the computed values
+        for s in range(self.num_states):
+            if s not in self.end_states:
+                self.pi[s] = self.best_action(s)
+
+    def solve(self, algorithm):
+        if algorithm == 'vi':
+            self.value_iteration()
+        elif algorithm == 'hpi':
+            self.howards_policy_iteration()
+        elif algorithm == 'lp':
+            self.linear_programming()
+        else:
+            print("Invalid algorithm selected. Please choose one of 'vi', 'hpi', or 'lp'.")
+
+    def print_results(self):
+        # Print the results in the desired format
+        for s in range(self.num_states):
+            v_star, pi_star = self.V[s], self.pi[s]
+            print(f"{v_star:.6f}\t{pi_star}")
 
 def main():
-    # Read command-line arguments
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--mdp", help="Path to the MDP txt file")
-    parser.add_argument("--algorithm", help="Algorithm to solve the MDP (vi, hpi, lp)")
+    parser = argparse.ArgumentParser(description="MDP Planning Algorithms")
+    parser.add_argument("--mdp", type=str, help="Path to the input MDP file")
+    parser.add_argument("--algorithm", type=str, choices=["vi", "hpi", "lp"], help="Algorithm to use: vi, hpi, or lp")
     args = parser.parse_args()
 
-    mdp_file = args.mdp
-    algorithm = args.algorithm
-    
-    # Read MDP file
-    num_states, num_actions, start_state, end_states, transitions, rewards, mdptype, discount = read_mdp_file(mdp_file)
-    
-    # Solve MDP using the specified algorithm
-    if algorithm == "vi":
-        values, policy = value_iteration(num_states, num_actions, transitions, rewards, discount)
-    elif algorithm == "hpi":
-        values, policy = howards_policy_iteration(num_states, num_actions, transitions, rewards, discount)
-    elif algorithm == "lp":
-        values, policy = linear_programming(num_states, num_actions, transitions, rewards, discount)
-    else:
-        print("Invalid algorithm specified. Please choose either 'vi', 'hpi', or 'lp'.")
+    if not args.mdp or not args.algorithm:
+        print("Both --mdp and --algorithm arguments are required.")
         return
-    
-    # Print the optimal value function and policy
-    print_results(values, policy)
+
+    mdp = MDP(args.mdp)
+    mdp.solve(args.algorithm)
+    mdp.print_results()
 
 if __name__ == "__main__":
     main()

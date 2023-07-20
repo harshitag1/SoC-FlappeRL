@@ -55,6 +55,12 @@ class MDP():
         print("numActions",A)
         print("start 0")
         print("end -1")
+        #start = random.randint(0, S-1)
+        #print("start",start)
+        #
+        #end = random.sample(range(S), random.randint(1, S-1))
+        #print("end",' '.join(map(str,end)))
+        
 
         for s in range(0, S):
             for a in range(0, A):
@@ -97,3 +103,9 @@ if __name__ == "__main__":
     
     #print(args)
     algo = MDP(args.S,args.A,args.gamma,args.mdptype,args.rseed)
+
+
+
+
+
+
